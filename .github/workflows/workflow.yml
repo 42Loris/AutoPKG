@@ -32,6 +32,19 @@ jobs:
           sudo installer -target / -pkg "$RUNNER_TEMP/autopkg.pkg"
           rm "$RUNNER_TEMP/autopkg.pkg"
 
+      - name: Install Munki tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_url="$(curl -fsSL https://api.github.com/repos/macadmins/munki-builds/releases/latest \
+            | python3 -c 'import json,sys; assets=json.load(sys.stdin)["assets"]; print(next(a["browser_download_url"] for a in assets if a["name"].startswith("munkitools-") and a["name"].endswith(".pkg")))')"
+          pkg_path="$RUNNER_TEMP/$(basename "$pkg_url")"
+          curl -fsSL "$pkg_url" -o "$pkg_path"
+          sudo installer -pkg "$pkg_path" -target /
+          echo "/usr/local/munki" >> "$GITHUB_PATH"
+          test -x /usr/local/munki/makepkginfo
+          rm "$pkg_path"
+
       - name: Configure SSH access to Munki server
         shell: bash
         env:
