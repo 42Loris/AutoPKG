@@ -1,0 +1,130 @@
+name: AutoPkg Run
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: munki-autopkg
+  cancel-in-progress: false
+
+jobs:
+  autopkg:
+    runs-on: macos-latest
+    environment: AutoPKG
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out recipes and workflow
+        uses: actions/checkout@v6
+
+      - name: Install AutoPkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://github.com/autopkg/autopkg/releases/download/v3.0.0/autopkg-3.0.0.pkg \
+            --output "$RUNNER_TEMP/autopkg.pkg"
+          sudo installer -target / -pkg "$RUNNER_TEMP/autopkg.pkg"
+          rm "$RUNNER_TEMP/autopkg.pkg"
+
+      - name: Configure SSH access to Munki server
+        shell: bash
+        env:
+          MUNKI_SSH_HOST: ${{ secrets.MUNKI_SSH_HOST }}
+          MUNKI_SSH_USER: ${{ secrets.MUNKI_SSH_USER }}
+          MUNKI_SSH_PRIVATE_KEY: ${{ secrets.MUNKI_SSH_PRIVATE_KEY }}
+          MUNKI_SSH_KNOWN_HOSTS: ${{ secrets.MUNKI_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${MUNKI_SSH_HOST:?Set the MUNKI_SSH_HOST secret}"
+          : "${MUNKI_SSH_USER:?Set the MUNKI_SSH_USER secret}"
+          : "${MUNKI_SSH_PRIVATE_KEY:?Set the MUNKI_SSH_PRIVATE_KEY secret}"
+          : "${MUNKI_SSH_KNOWN_HOSTS:?Set the MUNKI_SSH_KNOWN_HOSTS secret}"
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$MUNKI_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$MUNKI_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+          cat > "$HOME/.ssh/config" <<EOF
+          Host munki-server
+            HostName $MUNKI_SSH_HOST
+            User $MUNKI_SSH_USER
+            IdentityFile $HOME/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $HOME/.ssh/known_hosts
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+          ssh -F "$HOME/.ssh/config" munki-server true
+
+      - name: Download Munki repo metadata to local staging
+        shell: bash
+        env:
+          MUNKI_REPO_PATH: ${{ secrets.MUNKI_REPO_PATH }}
+        run: |
+          set -euo pipefail
+          : "${MUNKI_REPO_PATH:?Set the MUNKI_REPO_PATH secret}"
+          mkdir -p "$RUNNER_TEMP/munki_repo/pkgs"
+          rsync -a -e "ssh -F $HOME/.ssh/config" \
+            --include='/pkgsinfo/***' \
+            --include='/catalogs/***' \
+            --exclude='*' \
+            "munki-server:${MUNKI_REPO_PATH%/}/" \
+            "$RUNNER_TEMP/munki_repo/"
+
+      - name: Add and update AutoPkg recipe repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r repo || [[ -n "$repo" ]]; do
+            repo="${repo%$'\r'}"
+            [[ -z "$repo" || "$repo" == \#* ]] && continue
+            autopkg repo-add "$repo"
+          done < AutoPkgTools/RepoList.txt
+          autopkg repo-update
+
+      - name: Configure AutoPkg for the staged Munki repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          defaults write com.github.autopkg MUNKI_REPO "$RUNNER_TEMP/munki_repo"
+          mkdir -p "$HOME/Library/AutoPkg/RecipeOverrides"
+          cp GlobalSecureAccessClient.munki.recipe \
+            "$HOME/Library/AutoPkg/RecipeOverrides/GlobalSecureAccessClient.munki.recipe"
+
+      - name: Run AutoPkg recipes
+        shell: bash
+        run: autopkg run --recipe-list AutoPkgTools/recipes_list.txt
+
+      - name: Upload packages and pkginfo over SSH
+        shell: bash
+        env:
+          MUNKI_REPO_PATH: ${{ secrets.MUNKI_REPO_PATH }}
+        run: |
+          set -euo pipefail
+          : "${MUNKI_REPO_PATH:?Set the MUNKI_REPO_PATH secret}"
+          rsync -a -e "ssh -F $HOME/.ssh/config" \
+            --include='/pkgs/***' \
+            --include='/pkgsinfo/***' \
+            --exclude='*' \
+            "$RUNNER_TEMP/munki_repo/" \
+            "munki-server:${MUNKI_REPO_PATH%/}/"
+
+      - name: Rebuild Munki catalogs on the Linux server
+        shell: bash
+        env:
+          MUNKI_REPO_PATH: ${{ secrets.MUNKI_REPO_PATH }}
+          MUNKI_MAKECATALOGS_PATH: ${{ secrets.MUNKI_MAKECATALOGS_PATH }}
+        run: |
+          set -euo pipefail
+          : "${MUNKI_REPO_PATH:?Set the MUNKI_REPO_PATH secret}"
+          : "${MUNKI_MAKECATALOGS_PATH:?Set the MUNKI_MAKECATALOGS_PATH secret}"
+          ssh -F "$HOME/.ssh/config" munki-server \
+            "'$MUNKI_MAKECATALOGS_PATH' '$MUNKI_REPO_PATH'"
