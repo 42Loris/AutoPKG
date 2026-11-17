@@ -36,14 +36,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg_url="$(curl -fsSL https://api.github.com/repos/macadmins/munki-builds/releases/latest \
-            | python3 -c 'import json,sys; assets=json.load(sys.stdin)["assets"]; print(next(a["browser_download_url"] for a in assets if a["name"].startswith("munkitools-") and a["name"].endswith(".pkg")))')"
-          pkg_path="$RUNNER_TEMP/$(basename "$pkg_url")"
-          curl -fsSL "$pkg_url" -o "$pkg_path"
-          sudo installer -pkg "$pkg_path" -target /
+          curl --fail --silent --show-error --location \
+            https://github.com/munki/munki/releases/download/v7.4.0/munkitools-7.4.0.5891.pkg \
+            --output "$RUNNER_TEMP/munkitools.pkg"
+          sudo installer -pkg "$RUNNER_TEMP/munkitools.pkg" -target /
           echo "/usr/local/munki" >> "$GITHUB_PATH"
           test -x /usr/local/munki/makepkginfo
-          rm "$pkg_path"
+          rm "$RUNNER_TEMP/munkitools.pkg"
 
       - name: Configure SSH access to Munki server
         shell: bash
