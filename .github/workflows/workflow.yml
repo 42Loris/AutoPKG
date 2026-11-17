@@ -115,6 +115,10 @@ jobs:
         shell: bash
         run: autopkg run --recipe-list AutoPkgTools/recipes_list.txt
 
+      - name: Rebuild Munki catalogs on macOS runner
+        shell: bash
+        run: /usr/local/munki/makecatalogs "$RUNNER_TEMP/munki_repo"
+
       - name: Upload packages and pkginfo over SSH
         shell: bash
         env:
@@ -125,18 +129,8 @@ jobs:
           rsync -a --no-perms --no-owner --no-group --omit-dir-times -e "ssh -F $HOME/.ssh/config" \
             --include='/pkgs/***' \
             --include='/pkgsinfo/***' \
+            --include='/catalogs/***' \
             --exclude='*' \
             "$RUNNER_TEMP/munki_repo/" \
             "munki-server:${MUNKI_REPO_PATH%/}/"
 
-      - name: Rebuild Munki catalogs on the Linux server
-        shell: bash
-        env:
-          MUNKI_REPO_PATH: ${{ secrets.MUNKI_REPO_PATH }}
-          MUNKI_MAKECATALOGS_PATH: ${{ secrets.MUNKI_MAKECATALOGS_PATH }}
-        run: |
-          set -euo pipefail
-          : "${MUNKI_REPO_PATH:?Set the MUNKI_REPO_PATH secret}"
-          : "${MUNKI_MAKECATALOGS_PATH:?Set the MUNKI_MAKECATALOGS_PATH secret}"
-          ssh -F "$HOME/.ssh/config" munki-server \
-            "'$MUNKI_MAKECATALOGS_PATH' '$MUNKI_REPO_PATH'"
