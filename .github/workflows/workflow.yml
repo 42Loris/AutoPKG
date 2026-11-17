@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${MUNKI_REPO_PATH:?Set the MUNKI_REPO_PATH secret}"
-          rsync -a -e "ssh -F $HOME/.ssh/config" \
+          rsync -a --no-perms --no-owner --no-group --omit-dir-times -e "ssh -F $HOME/.ssh/config" \
             --include='/pkgs/***' \
             --include='/pkgsinfo/***' \
             --exclude='*' \
